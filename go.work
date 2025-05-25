@@ -1,9 +1,0 @@
-go 1.23
-
-toolchain go1.24.2
-
-use (
-	./app
-	./core
-	./extras
-)
