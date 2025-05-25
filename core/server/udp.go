@@ -8,9 +8,9 @@ import (
 
 	"github.com/apernet/quic-go"
 
-	"github.com/apernet/hysteria/core/v2/internal/frag"
-	"github.com/apernet/hysteria/core/v2/internal/protocol"
-	"github.com/apernet/hysteria/core/v2/internal/utils"
+	"github.com/apernet/hysteria/core/v2/international/frag"
+	"github.com/apernet/hysteria/core/v2/international/protocol"
+	"github.com/apernet/hysteria/core/v2/international/utils"
 )
 
 const (
@@ -23,7 +23,7 @@ type udpIO interface {
 	UDP(reqAddr string) (UDPConn, error)
 }
 
-type udpSessionEntry struct {
+type UdpSessionEntry struct {
 	ID   uint32
 	D    *frag.Defragger
 	Last *utils.AtomicTime
@@ -36,15 +36,17 @@ type udpSessionEntry struct {
 	connLock sync.Mutex
 	closed   bool
 
-	aclCache map[string]error
+	IsHijack  bool
+	ReceiveCh chan *protocol.UDPMessage
+	SendCh    chan *protocol.UDPMessage
 }
 
 func newUDPSessionEntry(
 	id uint32, io udpIO,
 	dialFunc func(string) (UDPConn, error),
 	exitFunc func(error),
-) (e *udpSessionEntry) {
-	e = &udpSessionEntry{
+) (e *UdpSessionEntry) {
+	e = &UdpSessionEntry{
 		ID:   id,
 		D:    &frag.Defragger{},
 		Last: utils.NewAtomicTime(time.Now()),
@@ -59,7 +61,7 @@ func newUDPSessionEntry(
 
 // CloseWithErr closes the session and calls ExitFunc with the given error.
 // A nil error indicates the session is cleaned up due to timeout.
-func (e *udpSessionEntry) CloseWithErr(err error) {
+func (e *UdpSessionEntry) CloseWithErr(err error) {
 	// We need this lock to ensure not to create conn after session exit
 	e.connLock.Lock()
 
@@ -67,6 +69,11 @@ func (e *udpSessionEntry) CloseWithErr(err error) {
 		// Already closed
 		e.connLock.Unlock()
 		return
+	}
+
+	if e.IsHijack {
+		close(e.ReceiveCh)
+		close(e.SendCh)
 	}
 
 	e.closed = true
@@ -84,12 +91,24 @@ func (e *udpSessionEntry) CloseWithErr(err error) {
 // written is returned. Otherwise, 0 and nil are returned.
 // Until the connection is established, messages are held back instead, and are
 // written together once the hook is done with them.
-func (e *udpSessionEntry) Feed(msg *protocol.UDPMessage) (int, error) {
+func (e *UdpSessionEntry) Feed(msg *protocol.UDPMessage) (int, error) {
 	e.Last.Set(time.Now())
 	dfMsg := e.D.Feed(msg)
 	if dfMsg == nil {
 		return 0, nil
 	}
+
+	if e.IsHijack {
+		e.connLock.Lock()
+		err := errors.New("session is closed")
+		if !e.closed {
+			err = nil
+			e.ReceiveCh <- dfMsg
+		}
+		e.connLock.Unlock()
+		return len(dfMsg.Data), err
+	}
+
 	if e.conn != nil {
 		return e.conn.WriteTo(dfMsg.Data, dfMsg.Addr)
 	}
@@ -103,7 +122,7 @@ func (e *udpSessionEntry) Feed(msg *protocol.UDPMessage) (int, error) {
 // initConn initializes the UDP connection of the session to addr,
 // which is what the hook turned the address of the first message into.
 // If no error is returned, the e.conn is set to the new connection.
-func (e *udpSessionEntry) initConn(addr string) error {
+func (e *UdpSessionEntry) initConn(addr string) error {
 	// We need this lock to ensure not to create conn after session exit
 	e.connLock.Lock()
 
@@ -134,26 +153,36 @@ func (e *udpSessionEntry) initConn(addr string) error {
 // and sends using the IO.
 // Exit when either the underlying UDP connection returns error (e.g. closed),
 // or the IO returns error when sending.
-func (e *udpSessionEntry) receiveLoop() {
+func (e *UdpSessionEntry) receiveLoop() {
 	udpBuf := make([]byte, protocol.MaxUDPSize)
 	msgBuf := make([]byte, protocol.MaxUDPSize)
+	var msg *protocol.UDPMessage
 	for {
-		udpN, rAddr, err := e.conn.ReadFrom(udpBuf)
-		if err != nil {
-			e.CloseWithErr(err)
-			return
+		if e.IsHijack {
+			var ok bool
+			msg, ok = <-e.SendCh
+			if !ok {
+				return
+			}
+		} else {
+			udpN, rAddr, err := e.conn.ReadFrom(udpBuf)
+			if err != nil {
+				e.CloseWithErr(err)
+				return
+			}
+
+			msg = &protocol.UDPMessage{
+				SessionID: e.ID,
+				PacketID:  0,
+				FragID:    0,
+				FragCount: 1,
+				Addr:      rAddr,
+				Data:      udpBuf[:udpN],
+			}
+
 		}
 		e.Last.Set(time.Now())
-
-		msg := &protocol.UDPMessage{
-			SessionID: e.ID,
-			PacketID:  0,
-			FragID:    0,
-			FragCount: 1,
-			Addr:      rAddr,
-			Data:      udpBuf[:udpN],
-		}
-		err = sendMessageAutoFrag(e.IO, msgBuf, msg)
+		err := sendMessageAutoFrag(e.IO, msgBuf, msg)
 		if err != nil {
 			e.CloseWithErr(err)
 			return
@@ -193,14 +222,16 @@ type udpSessionManager struct {
 	idleTimeout time.Duration
 
 	mutex sync.RWMutex
-	m     map[uint32]*udpSessionEntry
+	m     map[uint32]*UdpSessionEntry
+
+	UdpSessionHijacker func(*UdpSessionEntry, string)
 }
 
 func newUDPSessionManager(io udpIO, idleTimeout time.Duration) *udpSessionManager {
 	return &udpSessionManager{
 		io:          io,
 		idleTimeout: idleTimeout,
-		m:           make(map[uint32]*udpSessionEntry),
+		m:           make(map[uint32]*UdpSessionEntry),
 	}
 }
 
@@ -237,7 +268,7 @@ func (m *udpSessionManager) idleCleanupLoop(stopCh <-chan struct{}) {
 func (m *udpSessionManager) cleanup(idleOnly bool) {
 	// We use RLock here as we are only scanning the map, not deleting from it.
 	m.mutex.RLock()
-	timeoutEntry := make([]*udpSessionEntry, 0, len(m.m))
+	timeoutEntry := make([]*UdpSessionEntry, 0, len(m.m))
 	now := time.Now()
 	for _, entry := range m.m {
 		if !idleOnly || now.Sub(entry.Last.Get()) > m.idleTimeout {
@@ -277,6 +308,14 @@ func (m *udpSessionManager) feed(msg *protocol.UDPMessage) {
 		m.mutex.Lock()
 		m.m[msg.SessionID] = entry
 		m.mutex.Unlock()
+
+		if m.UdpSessionHijacker != nil {
+			entry.ReceiveCh = make(chan *protocol.UDPMessage, 100)
+			entry.SendCh = make(chan *protocol.UDPMessage, 100)
+			entry.IsHijack = true
+			go entry.receiveLoop()
+			m.UdpSessionHijacker(entry, msg.Addr)
+		}
 	}
 
 	// Feed the message to the session
