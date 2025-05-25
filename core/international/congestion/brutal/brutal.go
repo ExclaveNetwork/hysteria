@@ -8,7 +8,7 @@ import (
 
 	"github.com/apernet/hysteria/core/v2/international/congestion/common"
 
-	"github.com/apernet/quic-go/congestion"
+	"github.com/sagernet/quic-go/congestion"
 )
 
 const (

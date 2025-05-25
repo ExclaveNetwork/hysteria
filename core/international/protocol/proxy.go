@@ -8,7 +8,7 @@ import (
 
 	"github.com/apernet/hysteria/core/v2/errors"
 
-	"github.com/apernet/quic-go/quicvarint"
+	"github.com/sagernet/quic-go/quicvarint"
 )
 
 const (

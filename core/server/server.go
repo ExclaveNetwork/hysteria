@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/apernet/quic-go"
-	"github.com/apernet/quic-go/http3"
+	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/http3"
 
 	"github.com/apernet/hysteria/core/v2/international/congestion"
 	"github.com/apernet/hysteria/core/v2/international/protocol"
@@ -41,6 +41,7 @@ func NewServer(config *Config) (Server, error) {
 		MaxIncomingStreams:             config.QUICConfig.MaxIncomingStreams,
 		DisablePathMTUDiscovery:        config.QUICConfig.DisablePathMTUDiscovery,
 		EnableDatagrams:                true,
+		MaxDatagramFrameSize:           1200,
 	}
 	listener, err := quic.Listen(config.Conn, tlsConfig, quicConfig)
 	if err != nil {

@@ -13,8 +13,8 @@ import (
 	"github.com/apernet/hysteria/core/v2/international/protocol"
 	"github.com/apernet/hysteria/core/v2/international/utils"
 
-	"github.com/apernet/quic-go"
-	"github.com/apernet/quic-go/http3"
+	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/http3"
 )
 
 const (
@@ -85,6 +85,7 @@ func (c *clientImpl) connect() (*HandshakeInfo, error) {
 		KeepAlivePeriod:                c.config.QUICConfig.KeepAlivePeriod,
 		DisablePathMTUDiscovery:        c.config.QUICConfig.DisablePathMTUDiscovery,
 		EnableDatagrams:                true,
+		MaxDatagramFrameSize:           1200,
 	}
 	// Prepare RoundTripper
 	var conn quic.EarlyConnection

@@ -8,8 +8,8 @@ import (
 
 	"github.com/apernet/hysteria/core/v2/errors"
 	"github.com/apernet/hysteria/core/v2/international/pmtud"
-	"github.com/apernet/quic-go"
-	"github.com/apernet/quic-go/http3"
+	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/http3"
 )
 
 const (

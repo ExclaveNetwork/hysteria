@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/apernet/quic-go"
+	"github.com/sagernet/quic-go"
 
 	"github.com/apernet/hysteria/core/v2/international/frag"
 	"github.com/apernet/hysteria/core/v2/international/protocol"
@@ -186,7 +186,7 @@ func sendMessageAutoFrag(io udpIO, buf []byte, msg *protocol.UDPMessage) error {
 	if errors.As(err, &errTooLarge) {
 		// Message too large, try fragmentation
 		msg.PacketID = uint16(rand.Intn(0xFFFF)) + 1
-		fMsgs := frag.FragUDPMessage(msg, int(errTooLarge.MaxDataLen))
+		fMsgs := frag.FragUDPMessage(msg, int(errTooLarge.MaxDatagramPayloadSize))
 		for _, fMsg := range fMsgs {
 			err := io.SendMessage(buf, &fMsg)
 			if err != nil {
