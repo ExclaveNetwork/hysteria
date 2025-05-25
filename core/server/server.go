@@ -9,9 +9,9 @@ import (
 	"github.com/apernet/quic-go"
 	"github.com/apernet/quic-go/http3"
 
-	"github.com/apernet/hysteria/core/v2/internal/congestion"
-	"github.com/apernet/hysteria/core/v2/internal/protocol"
-	"github.com/apernet/hysteria/core/v2/internal/utils"
+	"github.com/apernet/hysteria/core/v2/international/congestion"
+	"github.com/apernet/hysteria/core/v2/international/protocol"
+	"github.com/apernet/hysteria/core/v2/international/utils"
 )
 
 const (
@@ -165,6 +165,7 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !h.config.DisableUDP {
 				go func() {
 					sm := newUDPSessionManager(&udpIOImpl{h.conn, h.config.Outbound}, h.config.UDPIdleTimeout)
+					sm.UdpSessionHijacker = h.config.UdpSessionHijacker
 					h.udpSM = sm
 					go sm.Run()
 				}()
@@ -189,7 +190,11 @@ func (h *h3sHandler) ProxyStreamHijacker(ft http3.FrameType, _ quic.ConnectionTr
 
 	switch ft {
 	case protocol.FrameTypeTCPRequest:
-		go h.handleTCPRequest(qStream)
+		if h.config.StreamHijacker != nil {
+			h.config.StreamHijacker(ft, h.conn, qStream, err)
+		} else {
+			go h.handleTCPRequest(qStream)
+		}
 		return true, nil
 	default:
 		return false, nil
