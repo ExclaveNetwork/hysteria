@@ -11,6 +11,7 @@ import (
 
 	coreErrs "github.com/apernet/hysteria/core/v2/errors"
 	"github.com/apernet/hysteria/core/v2/international/congestion"
+	"github.com/apernet/hysteria/core/v2/international/pmtud"
 	"github.com/apernet/hysteria/core/v2/international/protocol"
 	"github.com/apernet/hysteria/core/v2/international/utils"
 
@@ -70,29 +71,49 @@ func (c *clientImpl) connect() (*HandshakeInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Convert config to TLS config & QUIC config
-	tlsConfig := &tls.Config{
-		ServerName:            c.config.TLSConfig.ServerName,
-		InsecureSkipVerify:    c.config.TLSConfig.InsecureSkipVerify,
-		VerifyPeerCertificate: c.config.TLSConfig.VerifyPeerCertificate,
-		RootCAs:               c.config.TLSConfig.RootCAs,
-		GetClientCertificate:  c.config.TLSConfig.GetClientCertificate,
+	var quicConfig *quic.Config
+	if c.config.QUICConfig != nil {
+		quicConfig = c.config.QUICConfig.Clone()
+	} else {
+		quicConfig = new(quic.Config)
 	}
-	quicConfig := &quic.Config{
-		InitialStreamReceiveWindow:     c.config.QUICConfig.InitialStreamReceiveWindow,
-		MaxStreamReceiveWindow:         c.config.QUICConfig.MaxStreamReceiveWindow,
-		InitialConnectionReceiveWindow: c.config.QUICConfig.InitialConnectionReceiveWindow,
-		MaxConnectionReceiveWindow:     c.config.QUICConfig.MaxConnectionReceiveWindow,
-		MaxIdleTimeout:                 c.config.QUICConfig.MaxIdleTimeout,
-		KeepAlivePeriod:                c.config.QUICConfig.KeepAlivePeriod,
-		DisablePathMTUDiscovery:        c.config.QUICConfig.DisablePathMTUDiscovery,
-		EnableDatagrams:                true,
-		DisablePathManager:             true,
+	if quicConfig.InitialStreamReceiveWindow == 0 {
+		quicConfig.InitialStreamReceiveWindow = defaultStreamReceiveWindow
+	} else if quicConfig.InitialStreamReceiveWindow < 16384 {
+		return nil, coreErrs.ConfigError{Field: "QUICConfig.InitialStreamReceiveWindow", Reason: "must be at least 16384"}
 	}
-	// Prepare RoundTripper
+	if quicConfig.MaxStreamReceiveWindow == 0 {
+		quicConfig.MaxStreamReceiveWindow = defaultStreamReceiveWindow
+	} else if quicConfig.MaxStreamReceiveWindow < 16384 {
+		return nil, coreErrs.ConfigError{Field: "QUICConfig.MaxStreamReceiveWindow", Reason: "must be at least 16384"}
+	}
+	if quicConfig.InitialConnectionReceiveWindow == 0 {
+		quicConfig.InitialConnectionReceiveWindow = defaultConnReceiveWindow
+	} else if quicConfig.InitialConnectionReceiveWindow < 16384 {
+		return nil, coreErrs.ConfigError{Field: "QUICConfig.InitialConnectionReceiveWindow", Reason: "must be at least 16384"}
+	}
+	if quicConfig.MaxConnectionReceiveWindow == 0 {
+		quicConfig.MaxConnectionReceiveWindow = defaultConnReceiveWindow
+	} else if quicConfig.MaxConnectionReceiveWindow < 16384 {
+		return nil, coreErrs.ConfigError{Field: "QUICConfig.MaxConnectionReceiveWindow", Reason: "must be at least 16384"}
+	}
+	if quicConfig.MaxIdleTimeout == 0 {
+		quicConfig.MaxIdleTimeout = defaultMaxIdleTimeout
+	} else if quicConfig.MaxIdleTimeout < 4*time.Second || quicConfig.MaxIdleTimeout > 120*time.Second {
+		return nil, coreErrs.ConfigError{Field: "QUICConfig.MaxIdleTimeout", Reason: "must be between 4s and 120s"}
+	}
+	if quicConfig.KeepAlivePeriod == 0 {
+		quicConfig.KeepAlivePeriod = defaultKeepAlivePeriod
+	} else if quicConfig.KeepAlivePeriod < 2*time.Second || quicConfig.KeepAlivePeriod > 60*time.Second {
+		return nil, coreErrs.ConfigError{Field: "QUICConfig.KeepAlivePeriod", Reason: "must be between 2s and 60s"}
+	}
+	quicConfig.DisablePathMTUDiscovery = quicConfig.DisablePathMTUDiscovery || pmtud.DisablePathMTUDiscovery
+	quicConfig.EnableDatagrams = true
+	quicConfig.DisablePathManager = true
+	// Prepare Transport
 	var conn quic.EarlyConnection
-	rt := &http3.RoundTripper{
-		TLSClientConfig: tlsConfig,
+	tr := &http3.Transport{
+		TLSClientConfig: c.config.TLSConfig,
 		QUICConfig:      quicConfig,
 		Dial: func(ctx context.Context, _ string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
 			qc, err := quic.DialEarly(ctx, pktConn, c.config.ServerAddr, tlsCfg, cfg)
@@ -117,7 +138,7 @@ func (c *clientImpl) connect() (*HandshakeInfo, error) {
 		Auth: c.config.Auth,
 		Rx:   c.config.BandwidthConfig.MaxRx,
 	})
-	resp, err := rt.RoundTrip(req)
+	resp, err := tr.RoundTrip(req)
 	if err != nil {
 		if conn != nil {
 			_ = conn.CloseWithError(closeErrCodeProtocolError, "")
