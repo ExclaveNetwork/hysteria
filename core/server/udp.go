@@ -15,34 +15,23 @@ import (
 
 const (
 	idleCleanupInterval = 1 * time.Second
-	maxSessionACLCache  = 256
 )
 
 type udpIO interface {
 	ReceiveMessage() (*protocol.UDPMessage, error)
 	SendMessage([]byte, *protocol.UDPMessage) error
-	Hook(packets [][]byte, reqAddr *string) (bool, error)
 	UDP(reqAddr string) (UDPConn, error)
-	CheckUDP(reqAddr string) error
-}
-
-type udpEventLogger interface {
-	New(sessionID uint32, reqAddr string)
-	Close(sessionID uint32, err error)
 }
 
 type udpSessionEntry struct {
-	ID           uint32
-	OverrideAddr string // Ignore the address in the UDP message, always use this if not empty
-	OriginalAddr string // The original address in the UDP message
-	D            *frag.Defragger
-	Last         *utils.AtomicTime
-	IO           udpIO
+	ID   uint32
+	D    *frag.Defragger
+	Last *utils.AtomicTime
+	IO   udpIO
 
 	DialFunc func(addr string) (UDPConn, error)
 	ExitFunc func(err error)
 
-	held     []*protocol.UDPMessage // Messages held back until the hook is done with them
 	conn     UDPConn
 	connLock sync.Mutex
 	closed   bool
@@ -102,79 +91,19 @@ func (e *udpSessionEntry) Feed(msg *protocol.UDPMessage) (int, error) {
 		return 0, nil
 	}
 	if e.conn != nil {
-		return e.write(dfMsg)
+		return e.conn.WriteTo(dfMsg.Data, dfMsg.Addr)
 	}
 
-	e.held = append(e.held, dfMsg)
-	packets := make([][]byte, len(e.held))
-	for i, m := range e.held {
-		packets[i] = m.Data
-	}
-	firstAddr := e.held[0].Addr
-	addr := firstAddr
-	done, err := e.IO.Hook(packets, &addr)
-	if err != nil {
-		e.CloseWithErr(err)
+	if err := e.initConn(dfMsg.Addr); err != nil {
 		return 0, err
 	}
-	if !done {
-		return 0, nil
-	}
-	if err := e.initConn(firstAddr, addr); err != nil {
-		return 0, err
-	}
-	if e.OverrideAddr == "" {
-		e.aclCache = map[string]error{firstAddr: nil}
-	}
-	held := e.held
-	e.held = nil
-	total := 0
-	for _, m := range held {
-		n, err := e.write(m)
-		if err != nil {
-			return total, err
-		}
-		total += n
-	}
-	return total, nil
-}
-
-// write writes a message to the session's UDP connection.
-func (e *udpSessionEntry) write(dfMsg *protocol.UDPMessage) (int, error) {
-	addr := dfMsg.Addr
-	if e.OverrideAddr != "" {
-		addr = e.OverrideAddr
-	} else if err := e.checkAddr(addr); err != nil {
-		return 0, err
-	}
-
-	return e.conn.WriteTo(dfMsg.Data, addr)
-}
-
-// checkAddr checks outbound policy for the given address.
-// The decision is cached in e.aclCache for future use.
-func (e *udpSessionEntry) checkAddr(addr string) error {
-	if decision, ok := e.aclCache[addr]; ok {
-		return decision
-	}
-	decision := e.IO.CheckUDP(addr)
-	if len(e.aclCache) >= maxSessionACLCache {
-		for k := range e.aclCache {
-			delete(e.aclCache, k)
-			break
-		}
-	}
-	if e.aclCache == nil {
-		e.aclCache = make(map[string]error, 4)
-	}
-	e.aclCache[addr] = decision
-	return decision
+	return e.conn.WriteTo(dfMsg.Data, dfMsg.Addr)
 }
 
 // initConn initializes the UDP connection of the session to addr,
 // which is what the hook turned the address of the first message into.
 // If no error is returned, the e.conn is set to the new connection.
-func (e *udpSessionEntry) initConn(firstAddr, addr string) error {
+func (e *udpSessionEntry) initConn(addr string) error {
 	// We need this lock to ensure not to create conn after session exit
 	e.connLock.Lock()
 
@@ -195,11 +124,6 @@ func (e *udpSessionEntry) initConn(firstAddr, addr string) error {
 
 	e.conn = conn
 
-	if firstAddr != addr {
-		// Hook changed the address, enable address override
-		e.OverrideAddr = addr
-		e.OriginalAddr = firstAddr
-	}
 	go e.receiveLoop()
 
 	e.connLock.Unlock()
@@ -220,13 +144,6 @@ func (e *udpSessionEntry) receiveLoop() {
 			return
 		}
 		e.Last.Set(time.Now())
-
-		if e.OriginalAddr != "" {
-			// Use the original address in the opposite direction,
-			// otherwise the QUIC clients or NAT on the client side
-			// may not treat it as the same UDP session.
-			rAddr = e.OriginalAddr
-		}
 
 		msg := &protocol.UDPMessage{
 			SessionID: e.ID,
@@ -273,17 +190,15 @@ func sendMessageAutoFrag(io udpIO, buf []byte, msg *protocol.UDPMessage) error {
 // for a certain period of time (specified by idleTimeout).
 type udpSessionManager struct {
 	io          udpIO
-	eventLogger udpEventLogger
 	idleTimeout time.Duration
 
 	mutex sync.RWMutex
 	m     map[uint32]*udpSessionEntry
 }
 
-func newUDPSessionManager(io udpIO, eventLogger udpEventLogger, idleTimeout time.Duration) *udpSessionManager {
+func newUDPSessionManager(io udpIO, idleTimeout time.Duration) *udpSessionManager {
 	return &udpSessionManager{
 		io:          io,
-		eventLogger: eventLogger,
 		idleTimeout: idleTimeout,
 		m:           make(map[uint32]*udpSessionEntry),
 	}
@@ -346,15 +261,10 @@ func (m *udpSessionManager) feed(msg *protocol.UDPMessage) {
 	// Create a new session if not exists
 	if entry == nil {
 		dialFunc := func(addr string) (UDPConn, error) {
-			// Log the event
-			m.eventLogger.New(msg.SessionID, addr)
 			// Dial target
 			return m.io.UDP(addr)
 		}
 		exitFunc := func(err error) {
-			// Log the event
-			m.eventLogger.Close(entry.ID, err)
-
 			// Remove the session from the map
 			m.mutex.Lock()
 			delete(m.m, entry.ID)
@@ -373,10 +283,4 @@ func (m *udpSessionManager) feed(msg *protocol.UDPMessage) {
 	// Feed (send) errors are ignored for now,
 	// as some are temporary (e.g. invalid address)
 	_, _ = entry.Feed(msg)
-}
-
-func (m *udpSessionManager) Count() int {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-	return len(m.m)
 }
