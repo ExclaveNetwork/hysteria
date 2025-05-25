@@ -2,15 +2,17 @@ package server
 
 import (
 	"context"
-	"crypto/tls"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/apernet/quic-go"
 	"github.com/apernet/quic-go/http3"
 	"github.com/apernet/quic-go/quicvarint"
 
+	"github.com/apernet/hysteria/core/v2/errors"
 	"github.com/apernet/hysteria/core/v2/international/congestion"
+	"github.com/apernet/hysteria/core/v2/international/pmtud"
 	"github.com/apernet/hysteria/core/v2/international/protocol"
 	"github.com/apernet/hysteria/core/v2/international/utils"
 )
@@ -24,39 +26,51 @@ type Server interface {
 	Close() error
 }
 
-func convertToStdTLSConfig(config *Config) *tls.Config {
-	var clientAuth tls.ClientAuthType
-	if config.TLSConfig.ClientCAs != nil {
-		clientAuth = tls.RequireAndVerifyClientCert
-	} else {
-		clientAuth = tls.NoClientCert
-	}
-	return http3.ConfigureTLSConfig(&tls.Config{
-		Certificates:   config.TLSConfig.Certificates,
-		GetCertificate: config.TLSConfig.GetCertificate,
-		ClientCAs:      config.TLSConfig.ClientCAs,
-		ClientAuth:     clientAuth,
-	})
-}
-
 func NewServer(config *Config) (Server, error) {
 	if err := config.fill(); err != nil {
 		return nil, err
 	}
-	tlsConfig := convertToStdTLSConfig(config)
-	quicConfig := &quic.Config{
-		InitialStreamReceiveWindow:     config.QUICConfig.InitialStreamReceiveWindow,
-		MaxStreamReceiveWindow:         config.QUICConfig.MaxStreamReceiveWindow,
-		InitialConnectionReceiveWindow: config.QUICConfig.InitialConnectionReceiveWindow,
-		MaxConnectionReceiveWindow:     config.QUICConfig.MaxConnectionReceiveWindow,
-		MaxIdleTimeout:                 config.QUICConfig.MaxIdleTimeout,
-		MaxIncomingStreams:             config.QUICConfig.MaxIncomingStreams,
-		DisablePathMTUDiscovery:        config.QUICConfig.DisablePathMTUDiscovery,
-		EnableDatagrams:                true,
-		MaxDatagramFrameSize:           protocol.MaxDatagramFrameSize,
-		DisablePathManager:             true,
+	var quicConfig *quic.Config
+	if config.QUICConfig != nil {
+		quicConfig = config.QUICConfig.Clone()
+	} else {
+		quicConfig = new(quic.Config)
 	}
-	listener, err := quic.Listen(config.Conn, tlsConfig, quicConfig)
+	if quicConfig.InitialStreamReceiveWindow == 0 {
+		quicConfig.InitialStreamReceiveWindow = defaultStreamReceiveWindow
+	} else if quicConfig.InitialStreamReceiveWindow < 16384 {
+		return nil, errors.ConfigError{Field: "QUICConfig.InitialStreamReceiveWindow", Reason: "must be at least 16384"}
+	}
+	if quicConfig.MaxStreamReceiveWindow == 0 {
+		quicConfig.MaxStreamReceiveWindow = defaultStreamReceiveWindow
+	} else if quicConfig.MaxStreamReceiveWindow < 16384 {
+		return nil, errors.ConfigError{Field: "QUICConfig.MaxStreamReceiveWindow", Reason: "must be at least 16384"}
+	}
+	if quicConfig.InitialConnectionReceiveWindow == 0 {
+		quicConfig.InitialConnectionReceiveWindow = defaultConnReceiveWindow
+	} else if quicConfig.InitialConnectionReceiveWindow < 16384 {
+		return nil, errors.ConfigError{Field: "QUICConfig.InitialConnectionReceiveWindow", Reason: "must be at least 16384"}
+	}
+	if quicConfig.MaxConnectionReceiveWindow == 0 {
+		quicConfig.MaxConnectionReceiveWindow = defaultConnReceiveWindow
+	} else if quicConfig.MaxConnectionReceiveWindow < 16384 {
+		return nil, errors.ConfigError{Field: "QUICConfig.MaxConnectionReceiveWindow", Reason: "must be at least 16384"}
+	}
+	if quicConfig.MaxIdleTimeout == 0 {
+		quicConfig.MaxIdleTimeout = defaultMaxIdleTimeout
+	} else if quicConfig.MaxIdleTimeout < 4*time.Second || quicConfig.MaxIdleTimeout > 120*time.Second {
+		return nil, errors.ConfigError{Field: "QUICConfig.MaxIdleTimeout", Reason: "must be between 4s and 120s"}
+	}
+	if quicConfig.MaxIncomingStreams == 0 {
+		quicConfig.MaxIncomingStreams = defaultMaxIncomingStreams
+	} else if quicConfig.MaxIncomingStreams < 8 {
+		return nil, errors.ConfigError{Field: "QUICConfig.MaxIncomingStreams", Reason: "must be at least 8"}
+	}
+	quicConfig.DisablePathMTUDiscovery = quicConfig.DisablePathMTUDiscovery || pmtud.DisablePathMTUDiscovery
+	quicConfig.EnableDatagrams = true
+	quicConfig.MaxDatagramFrameSize = protocol.MaxDatagramFrameSize
+	quicConfig.DisablePathManager = true
+	listener, err := quic.Listen(config.Conn, http3.ConfigureTLSConfig(config.TLSConfig), quicConfig)
 	if err != nil {
 		_ = config.Conn.Close()
 		return nil, err
