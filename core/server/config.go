@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/apernet/hysteria/core/v2/errors"
-	"github.com/apernet/hysteria/core/v2/international/pmtud"
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
 )
@@ -21,8 +20,8 @@ const (
 )
 
 type Config struct {
-	TLSConfig             TLSConfig
-	QUICConfig            QUICConfig
+	TLSConfig             *tls.Config
+	QUICConfig            *quic.Config
 	Conn                  net.PacketConn
 	Outbound              Outbound
 	BandwidthConfig       BandwidthConfig
@@ -39,40 +38,6 @@ type Config struct {
 // fill fills the fields that are not set by the user with default values when possible,
 // and returns an error if the user has not set a required field, or if a field is invalid.
 func (c *Config) fill() error {
-	if len(c.TLSConfig.Certificates) == 0 && c.TLSConfig.GetCertificate == nil {
-		return errors.ConfigError{Field: "TLSConfig", Reason: "must set at least one of Certificates or GetCertificate"}
-	}
-	if c.QUICConfig.InitialStreamReceiveWindow == 0 {
-		c.QUICConfig.InitialStreamReceiveWindow = defaultStreamReceiveWindow
-	} else if c.QUICConfig.InitialStreamReceiveWindow < 16384 {
-		return errors.ConfigError{Field: "QUICConfig.InitialStreamReceiveWindow", Reason: "must be at least 16384"}
-	}
-	if c.QUICConfig.MaxStreamReceiveWindow == 0 {
-		c.QUICConfig.MaxStreamReceiveWindow = defaultStreamReceiveWindow
-	} else if c.QUICConfig.MaxStreamReceiveWindow < 16384 {
-		return errors.ConfigError{Field: "QUICConfig.MaxStreamReceiveWindow", Reason: "must be at least 16384"}
-	}
-	if c.QUICConfig.InitialConnectionReceiveWindow == 0 {
-		c.QUICConfig.InitialConnectionReceiveWindow = defaultConnReceiveWindow
-	} else if c.QUICConfig.InitialConnectionReceiveWindow < 16384 {
-		return errors.ConfigError{Field: "QUICConfig.InitialConnectionReceiveWindow", Reason: "must be at least 16384"}
-	}
-	if c.QUICConfig.MaxConnectionReceiveWindow == 0 {
-		c.QUICConfig.MaxConnectionReceiveWindow = defaultConnReceiveWindow
-	} else if c.QUICConfig.MaxConnectionReceiveWindow < 16384 {
-		return errors.ConfigError{Field: "QUICConfig.MaxConnectionReceiveWindow", Reason: "must be at least 16384"}
-	}
-	if c.QUICConfig.MaxIdleTimeout == 0 {
-		c.QUICConfig.MaxIdleTimeout = defaultMaxIdleTimeout
-	} else if c.QUICConfig.MaxIdleTimeout < 4*time.Second || c.QUICConfig.MaxIdleTimeout > 120*time.Second {
-		return errors.ConfigError{Field: "QUICConfig.MaxIdleTimeout", Reason: "must be between 4s and 120s"}
-	}
-	if c.QUICConfig.MaxIncomingStreams == 0 {
-		c.QUICConfig.MaxIncomingStreams = defaultMaxIncomingStreams
-	} else if c.QUICConfig.MaxIncomingStreams < 8 {
-		return errors.ConfigError{Field: "QUICConfig.MaxIncomingStreams", Reason: "must be at least 8"}
-	}
-	c.QUICConfig.DisablePathMTUDiscovery = c.QUICConfig.DisablePathMTUDiscovery || pmtud.DisablePathMTUDiscovery
 	if c.Conn == nil {
 		return errors.ConfigError{Field: "Conn", Reason: "must be set"}
 	}
@@ -94,23 +59,6 @@ func (c *Config) fill() error {
 		return errors.ConfigError{Field: "Authenticator", Reason: "must be set"}
 	}
 	return nil
-}
-
-// TLSConfig contains the TLS configuration fields that we want to expose to the user.
-type TLSConfig struct {
-	Certificates   []tls.Certificate
-	GetCertificate func(info *tls.ClientHelloInfo) (*tls.Certificate, error)
-}
-
-// QUICConfig contains the QUIC configuration fields that we want to expose to the user.
-type QUICConfig struct {
-	InitialStreamReceiveWindow     uint64
-	MaxStreamReceiveWindow         uint64
-	InitialConnectionReceiveWindow uint64
-	MaxConnectionReceiveWindow     uint64
-	MaxIdleTimeout                 time.Duration
-	MaxIncomingStreams             int64
-	DisablePathMTUDiscovery        bool // The server may still override this to true on unsupported platforms.
 }
 
 // Outbound provides the implementation of how the server should connect to remote servers.
