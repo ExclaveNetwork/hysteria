@@ -1,9 +1,9 @@
 package congestion
 
 import (
-	"github.com/apernet/hysteria/core/v2/international/congestion/bbr"
-	"github.com/apernet/hysteria/core/v2/international/congestion/brutal"
 	"github.com/apernet/quic-go"
+	"github.com/dyhkwong/hysteria/core/v2/international/congestion/bbr"
+	"github.com/dyhkwong/hysteria/core/v2/international/congestion/brutal"
 )
 
 func UseBBR(conn quic.Connection) {
