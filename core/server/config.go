@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/apernet/hysteria/core/v2/errors"
+	"github.com/dyhkwong/hysteria/core/v2/errors"
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
 )

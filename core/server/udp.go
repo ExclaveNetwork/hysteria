@@ -8,8 +8,8 @@ import (
 
 	"github.com/sagernet/quic-go"
 
-	"github.com/apernet/hysteria/core/v2/international/frag"
-	"github.com/apernet/hysteria/core/v2/international/protocol"
+	"github.com/dyhkwong/hysteria/core/v2/international/frag"
+	"github.com/dyhkwong/hysteria/core/v2/international/protocol"
 )
 
 const (
