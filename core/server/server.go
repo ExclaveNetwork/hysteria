@@ -10,11 +10,11 @@ import (
 	"github.com/apernet/quic-go/http3"
 	"github.com/apernet/quic-go/quicvarint"
 
-	"github.com/apernet/hysteria/core/v2/errors"
-	"github.com/apernet/hysteria/core/v2/international/congestion"
-	"github.com/apernet/hysteria/core/v2/international/pmtud"
-	"github.com/apernet/hysteria/core/v2/international/protocol"
-	"github.com/apernet/hysteria/core/v2/international/utils"
+	"github.com/dyhkwong/hysteria/core/v2/errors"
+	"github.com/dyhkwong/hysteria/core/v2/international/congestion"
+	"github.com/dyhkwong/hysteria/core/v2/international/pmtud"
+	"github.com/dyhkwong/hysteria/core/v2/international/protocol"
+	"github.com/dyhkwong/hysteria/core/v2/international/utils"
 )
 
 const (
