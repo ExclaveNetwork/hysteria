@@ -29,12 +29,15 @@ type obfsPacketConn struct {
 	writeMutex sync.Mutex
 }
 
-// obfsPacketConnUDP is a special case of obfsPacketConn that uses a UDPConn
-// as the underlying connection. We pass additional methods to quic-go to
-// enable UDP-specific optimizations.
-type obfsPacketConnUDP struct {
+type obfsSetBufferConn struct {
 	*obfsPacketConn
-	UDPConn *net.UDPConn
+	setWriteBuffer func(bytes int) error
+	setReadBuffer  func(bytes int) error
+}
+
+type obfsSyscallConn struct {
+	*obfsSetBufferConn
+	syscallConn func() (syscall.RawConn, error)
 }
 
 // WrapPacketConn enables obfuscation on a net.PacketConn.
@@ -48,13 +51,27 @@ func WrapPacketConn(conn net.PacketConn, obfs Obfuscator) net.PacketConn {
 		readBuf:  make([]byte, udpBufferSize),
 		writeBuf: make([]byte, udpBufferSize),
 	}
-	if udpConn, ok := conn.(*net.UDPConn); ok {
-		return &obfsPacketConnUDP{
-			obfsPacketConn: opc,
-			UDPConn:        udpConn,
-		}
-	} else {
+	setBufferFn, canSetBuffer := conn.(interface {
+		SetWriteBuffer(bytes int) error
+		SetReadBuffer(bytes int) error
+	})
+	if !canSetBuffer {
 		return opc
+	}
+	obfsSetBufferConn := &obfsSetBufferConn{
+		obfsPacketConn: opc,
+		setWriteBuffer: setBufferFn.SetWriteBuffer,
+		setReadBuffer:  setBufferFn.SetReadBuffer,
+	}
+	syscallConnFn, isSyscallConn := conn.(interface {
+		SyscallConn() (syscall.RawConn, error)
+	})
+	if !isSyscallConn {
+		return obfsSetBufferConn
+	}
+	return &obfsSyscallConn{
+		obfsSetBufferConn: obfsSetBufferConn,
+		syscallConn:       syscallConnFn.SyscallConn,
 	}
 }
 
@@ -106,16 +123,14 @@ func (c *obfsPacketConn) SetWriteDeadline(t time.Time) error {
 	return c.Conn.SetWriteDeadline(t)
 }
 
-// UDP-specific methods below
-
-func (c *obfsPacketConnUDP) SetReadBuffer(bytes int) error {
-	return c.UDPConn.SetReadBuffer(bytes)
+func (c *obfsSetBufferConn) SetReadBuffer(bytes int) error {
+	return c.setReadBuffer(bytes)
 }
 
-func (c *obfsPacketConnUDP) SetWriteBuffer(bytes int) error {
-	return c.UDPConn.SetWriteBuffer(bytes)
+func (c *obfsSetBufferConn) SetWriteBuffer(bytes int) error {
+	return c.setWriteBuffer(bytes)
 }
 
-func (c *obfsPacketConnUDP) SyscallConn() (syscall.RawConn, error) {
-	return c.UDPConn.SyscallConn()
+func (c *obfsSyscallConn) SyscallConn() (syscall.RawConn, error) {
+	return c.syscallConn()
 }
