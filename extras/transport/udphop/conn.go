@@ -37,6 +37,10 @@ type udpHopPacketConn struct {
 	bufPool sync.Pool
 }
 
+type udpHopSyscallConn struct {
+	*udpHopPacketConn
+}
+
 type udpPacket struct {
 	Buf  []byte
 	N    int
@@ -80,6 +84,16 @@ func NewUDPHopPacketConn(addr *UDPHopAddr, hopInterval time.Duration, listenUDPF
 				return make([]byte, udpBufferSize)
 			},
 		},
+	}
+	if _, ok := curConn.(interface {
+		SyscallConn() (syscall.RawConn, error)
+	}); ok {
+		syscallConn := &udpHopSyscallConn{
+			udpHopPacketConn: hConn,
+		}
+		go syscallConn.recvLoop(curConn)
+		go syscallConn.hopLoop()
+		return syscallConn, nil
 	}
 	go hConn.recvLoop(curConn)
 	go hConn.hopLoop()
@@ -263,7 +277,7 @@ func (u *udpHopPacketConn) SetWriteBuffer(bytes int) error {
 	return trySetWriteBuffer(u.currentConn, bytes)
 }
 
-func (u *udpHopPacketConn) SyscallConn() (syscall.RawConn, error) {
+func (u *udpHopSyscallConn) SyscallConn() (syscall.RawConn, error) {
 	u.connMutex.RLock()
 	defer u.connMutex.RUnlock()
 	sc, ok := u.currentConn.(syscall.Conn)
