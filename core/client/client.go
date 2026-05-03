@@ -147,14 +147,14 @@ func (c *clientImpl) connect() (*HandshakeInfo, error) {
 		if conn != nil {
 			_ = conn.CloseWithError(closeErrCodeProtocolError, "")
 		}
-		_ = tr.Close()
 		_ = pktConn.Close()
+		_ = tr.Close()
 		return nil, coreErrs.ConnectError{Err: err}
 	}
 	if resp.StatusCode != protocol.StatusAuthOK {
 		_ = conn.CloseWithError(closeErrCodeProtocolError, "")
-		_ = tr.Close()
 		_ = pktConn.Close()
+		_ = tr.Close()
 		return nil, coreErrs.AuthError{StatusCode: resp.StatusCode}
 	}
 	// Auth OK
@@ -254,8 +254,8 @@ func (c *clientImpl) UDP() (HyUDPConn, error) {
 
 func (c *clientImpl) Close() error {
 	_ = c.conn.CloseWithError(closeErrCodeOK, "")
-	_ = c.tr.Close()
 	_ = c.pktConn.Close()
+	_ = c.tr.Close()
 	return nil
 }
 
